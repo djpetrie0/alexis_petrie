@@ -1,0 +1,637 @@
+---
+title: "santos_petrie_11.7.23"
+author: "Daniel Petrie"
+date: "2023-11-07"
+output:
+  word_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+Global settings
+
+```{r, warning=FALSE, message=FALSE}
+library("ipumsr") #Useful for census, survey, and geographic data provided by IPUMS
+library("ltm") #?
+library("survey") #?
+library("tidyverse") #Data manipulation
+library("gtsummary")
+library("flextable")
+library("expss")
+library("ggplot2") #For plotting
+library("ggeffects") #For marginal/conditional effects plots
+library("margins") #For margins() function. Useful for comparing margins from ggeffects
+library("marginaleffects") #For hypothesis_test()
+library("parameters")
+
+#Set working directory
+setwd("C:/Users/djpet/OneDrive - The Pennsylvania State University/Other manuscripts/Alexis")
+
+#Data
+ddi <- read_ipums_ddi("C:/Users/djpet/OneDrive - The Pennsylvania State University/Other manuscripts/Alexis/nhis_00090.xml")
+data <- read_ipums_micro(ddi)
+
+#Looking at first few rows.
+head(data)
+```
+
+
+Cleaning code chunk. For reproducibility, I'm retaining all Alexis cleaning code below. I removed code chunks that either were hashed out, or code chunks that were for making data tables. Happy to add those in later.
+
+
+```{r}
+#Only keep Adult Sample 
+#See IPUMS Universe for Worry: https://nhis.ipums.org/nhis-action/variables/WORFREQ#universe_section
+
+
+#Create outcome "severe psychological distress". This looks like a composite score type of measure.
+data2<-subset(data,ASTATFLG==1)
+data2<-subset(data2,AEFFORT<5) #Eliminate those Not in the Universe
+data2<-subset(data2,AFEELINT1MO<5)  #Eliminate missing values 
+data2<-subset(data2,AHOPELESS<5)
+data2<-subset(data2,ANERVOUS<5)
+data2<-subset(data2,ARESTLESS<5)
+data2<-subset(data2,ASAD<5)
+data2<-subset(data2,AWORTHLESS<5)
+data2<-subset(data2,AGE>17) #Keep people over 18 nOTHING cHANGES
+
+#Creating the actual count variable.
+data2$distress_score<-data2$AEFFORT+
+  data2$AHOPELESS+data2$ANERVOUS+data2$ARESTLESS+
+  data2$ASAD+data2$AWORTHLESS
+
+#Making it dichotomous
+data2$distress<-ifelse(data2$distress_score>12,1,0)
+
+#Subsetting people with health data present. The variable SRH_dummy might not be needed.
+data2$SRH_dummy<-ifelse(data2$HEALTH>3,1,0)
+data2<-subset(data2,HEALTH<6)
+
+#Creating ethnicity factor variable.
+data2$reth<-as.factor(ifelse(data2$HISPYN == 2, "Latine", 
+                          ifelse(data2$RACENEW == 400, "Non-Latine Asian",
+                                 ifelse(data2$RACENEW == 200, "Non-Latine Black/AA",
+                                        ifelse(data2$RACENEW == 100, "Non-Latine White",
+                                               "Other")))))
+
+
+data2<-subset(data2,EDUC>001)
+data2<-subset(data2,EDUC<600)
+
+data2$agestage<-ifelse(data2$AGE<60,"Midage","Older")
+
+
+data2$reth<-factor(data2$reth,levels=c("Non-Latine Asian","Non-Latine Black/AA","Non-Latine Other","Latine","Non-Latine White"))
+data2$reth<-relevel(data2$reth,ref = "Non-Latine White")
+
+data2$male<-ifelse(data2$SEX==1,"Male","Female")
+
+data2$educ1<-ifelse(data2$EDUC<201,"Below HS",
+                   ifelse(data2$EDUC<204,"HS/GED",
+                          ifelse(data2$EDUC<302,"Some college",
+                                 ifelse(data2$EDUC<303,"AA",
+                                        ifelse(data2$EDUC<304,"AA",
+                                               ifelse(data2$EDUC<401,"BA",
+                                                      "More than BA"))))))
+
+
+data2$educ1<-relevel(as.factor(data2$educ1),ref = "HS/GED")
+
+data$SAMPWEIGHT<-(data$SAMPWEIGHT/22)
+
+#Puts labels in the Variable
+library(expss)
+data=apply_labels(data,n_index2="Neighborhood Cohesion Index",
+                  worry_flip="Frequency of Worry, Nervous or Anxious",
+                  worry_dummy="Daily/Weekly Worry",
+                  reth="Race/Ethnicity",
+                  NBHDTIME="Time living in neighborhood",
+                  marital="Marital Status",
+                  AGE="Age at the time of interview",
+                  educ1="Educational attainment",
+                  male="Sex",
+                  poor="Poverty status")
+#Something weird with this command getting a warning... will leave it alone for now?
+```
+
+Sub-setting and saving a "clean" data set.
+Variable I am grabbing:
+- c("NHISPID", "YEAR", "educ1", "male", "reth", "AGE", "agestage", "distress)
+
+```{r}
+data_sub <- subset(data2[,c("NHISPID", "YEAR", "educ1", "male", "reth", "AGE", "agestage", "distress")])
+write.csv(data_sub, 
+          file = "log_reg_tutorial_data_clean.csv", 
+          row.names = FALSE)
+```
+
+
+From my understanding, the "des" (i.e., design) argument is required, and does some fancy weighted stuff for survey data? Best guess is to have a "nationally representative" data set.
+
+```{r}
+#Runs Survey Weighted Models
+options(survey.lonely.psu="adjust")
+des<-svydesign(ids=~PSU,strata=~STRATA,weights=~SAMPWEIGHT, nest=TRUE,data=data2)
+#Line below does not work.
+#svymean(~data$n_close+data$n_counton+data$n_help+data$n_trust,design=des)
+```
+
+
+# Using R to explore Interaction Effects 
+
+## Petrie, Daniel J., The Pennsylvania State University  
+
+## Santos-Lozada, Alexis R., The Pennsylvania State University  
+
+
+**Abstract** 
+
+This tutorial introduces the use of R to explore interaction effects in social and behavioral sciences.  
+
+ 
+**Keywords**  
+
+R, interaction effects, open materials
+
+
+**Data** 
+
+For the purpose of this tutorial, we will be using data from the 199X-201X National Health Interview Survey (NHIS). The NHIS is available in harmonized form through the IPUMS platform maintained by University of Minnesota. Our analytic data set contains information about:  
+
+* Participant ID:  
+
+* AGE – continuous variable (we limited the analysis to respondents 25 and older)  
+
+* SEX – indicating sex assigned at birth for each respondent  
+
+* Race -  
+
+* Hispanic Ethnicity -  
+
+
+**The R Environment** 
+
+We strongly recommend using RStudio (RStudio Team, 2021), to edit and write code in R. RStudio is an integrative development environment (IDE) that makes working with R more user friendly. R is the actual programming language itself. To install R and RStudio, please refer to the provided resources (HERE AND HERE). will be using RStudio and libraries created by developers to 
+
+Note, that while we will be analyzing national data using the survey library, all of these processes will work on any data set. 
+
+
+**Intercept-only model**
+
+Intercept-only logistic regression models are the simplest form of logistic regression, where only an intercept term is included. Since there are no specified predictor/independent variables, the model estimates the probability of the dichotomous outcome (e.g., 0 or 1) for all observations as a constant value. Extensive explanations of logistic regression models are available in the extant scholarship (CITE WITH ALEXIS COMMENT SOURCES).
+
+An intercept-only logistic regression model is useful as a baseline model to compare with more complex logistic regression models that include various predictor variables and interactions. For example, using the NHIS data, we can fit an intercept-only logistic regression model with the following ccommand. 
+
+```{r}
+model_int <- svyglm(distress ~ 1, 
+                    design = des, 
+                    family = "quasibinomial")
+```
+
+Where distress represents the log-odds of reporting psychological distress, and 1 represents the intercept parameter.  The design = des option specifies the design file(?) that we created earlier. The option family="quasibinomial" refers to the type of general linear model to be used. For this tutorial we will set this option to “binomial” to reflect that our outcome variable is dichotomous.
+
+The summary() function is used to produce result summaries of various model fitting functions. We can examine the summary of the intercept-only logistic regression model with the following command.
+
+```{r}
+summary(model_int)
+```
+
+The intercept parameter (b0 = -3.41) reflects the expected log-odds of an individual to report psychological distress. However, parameter estimates from logistic regression are often reported in terms of odds rather than log-odds. To obtain parameters in odds units, one can simply exponentiate (e.g., exp()) the coefficient b0. Alternatively, one can also use the  model_parameters() command from the “parameters” package.
+
+```{r}
+#Option 1: exp(b0)
+exp(-3.41090)
+
+#Option 2: model_parameters(model, exponentiate = TRUE)
+model_parameters(model_int, 
+                 exponentiate = TRUE)
+```
+
+Now, the intercept parameter is in odds units; there is a 0.03 (3%) odds of reporting psychological distress.
+
+
+**Model 0a: Main effects model with one dichotomous predictor** 
+
+Now, we will add a categorical predictor, sex assigned at birth (0 = Female, 1 = Male) to the model.
+
+```{r}
+model0a <- svyglm(distress ~ 1 + male, 
+                design = des, 
+                family = "quasibinomial") 
+summary(model0a) 
+```
+
+Notice that the intercept parameter (b0 = -3.23) has changed. It now reflects the expected log-odds of females to report psychological distress. The estimate for b1 indicates the expected difference of the log-odds of reporting distress for being male. Therefore, we expect a –0.42 difference in the log-odds of reporting distress for being male. 
+
+Let’s look at these coefficients in odds units.
+
+```{r}
+model_parameters(model0a, 
+                 exponentiate = TRUE) 
+```
+
+Now, the odds for the intercept have increased (e.g., b0 = 0.04). This is because we now have other predictors explaining variability in the distress outcome. So, after accounting for differences in males and females, the probability of reporting distress increased for female respondents. Regarding the main effect parameter b1, being male is associated with a 0.65 (0.0065%) decrease in the odds of reporting distress. As a side note, if the 95% CI contains 1, then the association is not significant. An odds ratio of 1 indicates that the probability of either dichotomous outcome is equal across the two groups.  
+
+So far, we have only considered two ways of interpreting logistic regression results: (1) Interpreting the log-odds directly, (2) Transforming log-odds into an odds ratio. However, as model complexity grows, interpretation in log-odds and odds units becomes more cumbersome and difficult. For nonlinear models, it is often useful to use marginal effects, which is an intuitive way to understand logistic regression results. Marginal effects have the additional benefit of being reported in probability units, which tend to be easier to interpret.  
+
+Briefly, marginal effects refer to the change in the expected value of a response/dependent variable resulting from a change in one independent variable while holding other variables constant. Marginal effects can be calculated for dichotomous, categorical, or continuous variables. In a logistic regression context, marginal effects of dichotomous and categorical variables typically indicate how the probability of an outcome changes in response to change in the dichotomous/categorical variable. Marginal effects of continuous variables typically indicate how the probability of an outcome changes based on changes in the values of a predictor variable. Using model 0 as an example, marginal effects can answer the question “How does sex assigned at birth affect the probability of reporting distress?”.
+
+*NEED TO FIT THIS IN SOMEWHERE!*  
+
+It is important to note that if Bj > 0 then exp(Bj) > 1, indicating a positive relationship between Xj and the probability of the event occurring. If Bj  < 0 then exp(Bj) < 1, indicating a negative relationship between Xi and the probability of the event occurring. In other words, if the odds ratio is greater than one, then the probability of the event occurring is more likely, and if the odds ratio is less than one, then the probability of the event occurring is less likely. 
+
+Marginal effects can be estimated using the ggpredict() function from the “ggeffects” package.
+
+```{r}
+marginal_effects_mod0a <- ggpredict(model0a, 
+                                   terms = c("male"))   
+```
+
+The first argument specifies the model of interest, and the terms argument specifies the contrast of interest. Here, we want to examine differences in the probability of reporting distress for females and males so we enter “male” as out contrast.
+
+```{r}
+marginal_effects_mod0a
+```
+
+First, ggpredict() returns the predicted probabilities reporting distress for females and males with the associated 95% CIs. The predicted probabilities are similar in magnitude, in that females have a 4% chance of reporting distress compared to males with a 3% chance of reporting distress. 
+
+An additional function margins() from the “margins” package can also be used to calculate the average marginal effect in the probability of reporting distress between females and males.
+
+```{r}
+margins(model0a, 
+        design = des) 
+```
+
+On average, being male decreases the predicted probability of reporting distress by 1.3%. 
+
+An additional function to be aware of in the “ggeffects” package is the hypothesis_test() function, which tests differences in contrasts or comparisons of interest for statistical significance.
+
+```{r}
+hypothesis_test(marginal_effects_mod0a)
+```
+
+Here we see that, similar to the margins() function, the contrast of Female – Male is 0.01, and is significant at an alpha of 0.05. 
+
+Finally, plotting the predicted probabilities for each group is also simple, using the plot() function.
+
+```{r}
+#Plot 
+plot(marginal_effects_mod0a) + 
+  labs(x = "Sex", 
+       y = "Distress") 
+```
+
+
+**Model 0b: Main effects model with multiple predictors**
+
+Now we will add some predictors of psychological distress to the model. Specifically, we will add education (educ1) and year (YEAR) as covariates. Predictors of interest are ethnicity (reth), sex assigned at birth (male), and age (AGE).
+
+```{r}
+model0b <- svyglm(distress ~ 1 + reth + AGE + educ1 + male + YEAR, 
+                design = des, 
+                family = "quasibinomial") 
+summary(model0b) 
+```
+
+Notice here that the only predictors that have increased odds of reporting distress are individuals who reported that they did not graduate high school, and year, such that the probability of reporting distress increased as the year of survey increased. 
+
+We can also look at main effects of interest as marginal effects. We already looked at the sex (e.g., male) contrast.
+
+```{r}
+ggpredict(model0b, 
+          terms = "male") 
+```
+
+Notice that the predicted probabilities changed slightly from Table #. We now have additional variables included that change the association between sex assigned at birth and distress. Also, there is some new information returned from the ggpredict() function. The predicted probabilities of distress at each level of sex, are now adjusted for our other predictors in the model. In general, if the variable is dichotomous or categorical, the prediction is adjusted for the reference group. If the variable is continuous, then the prediction is adjusted at the mean of the continuous variable.
+
+Now, we will examine the other main effects of interest: ethnicity and age.
+
+```{r}
+#Ethnicity probabilities
+ggpredict(model0b, 
+          terms = "reth")
+
+#Age probabilities
+ggpredict(model0b, 
+          terms = "AGE[all]")
+```
+
+From the main effects, we can see that: (1) Females have a higher probability of reporting distress than males; (2) Probability of reporting distress varies by ethnicity, and (3) there is a small effect of age, such that the probability of reporting distress deceases across age.
+
+The ggpredict() function can also handle multiple predictors at once. This allows users to examine marginal effect contrasts across multiple grouping variables.
+
+```{r}
+ggpredict(model0b, 
+          terms = c("AGE[all]", "reth", "male")) 
+
+ggpredict(model0b, 
+          terms = c("AGE[all]", "reth", "male")) %>% 
+  plot() + scale_x_continuous(limits=c(18,85),
+                              breaks=c(18,25,35,45,55,65,75,85))
+```
+
+Notice that all line are parallel. This is because we only have main effects specified in the model. Each variable is held constant across all other variables. However, most times researchers are interested in interaction effects. For example, age could be moderating the association between sex assigned at birth and psychological distress. In this case, an interaction term needs to be specified in the model.
+
+
+**Interactions with Logistic Regression**
+
+The rest of the tutorial will involve fitting a series of logistic regression models with different types of interaction effects. 
+
+
+**Model 1: Continuous x Dichotomous Interaction**
+
+One way to specify an interaction is with a “:”.   
+
+```{r}
+model1 <- svyglm(distress ~ 1 + reth + AGE + educ1 + male + YEAR + AGE:male, 
+                design=des, 
+                family="quasibinomial") 
+summary(model1) 
+```
+
+Table # now has an interaction term included in the output. We can see that the log-odds of the interaction term is 0.005 and is significant.  
+
+We can retrieve the marginal effects in a similar way as above.
+
+```{r}
+marginal_effects_mod1 <- ggpredict(model1, 
+                                   terms = c("AGE[all]", "male"))   
+marginal_effects_mod1 
+```
+
+We can also plot the marginal effects of the interaction in a similar way. Note that we have added some additional arguments to the plot() call in order to make the figures more legible. There are numerous ggplot2 tutorials available online, and in the extant literature (CITE STUFF). 
+
+```{r}
+plot(marginal_effects_mod1,  
+     facet = FALSE) + 
+   labs(title = "Predicted Probabilities of Distress: Model 1", 
+        x = "Age (Continous)", 
+        y = "Distress") + 
+  scale_x_continuous(limits=c(18,85), 
+                     breaks=c(18,25,35,45,55,65,75,85)) + 
+  theme(legend.position="bottom",
+        legend.title = element_blank()) + 
+  guides(color=guide_legend(override.aes=list(fill=NA))) + 
+  theme(panel.spacing.x = unit(1.5, "lines"),panel.spacing.y=unit(1, "lines")) 
+```
+**Figure #** Visualization of interaction effects for a continous measure of Age and Sex concerning having serious psychological distress.
+
+
+Here, we can see that the slope of age on distress is different for females and males. In females, the predicted probability of experiencing distress decreases from 18 years of age (5%) to 85 years of age (4%). For the males, there is no change in distress across this age range (all probabilities are 3%).
+
+We can also test whether these slopes are significantly different than 0 *AND* are significantly different from each other using the hypothesis_test() function.
+
+```{r}
+#Are there significant linear trends/ Are slopes different than 0?
+hypothesis_test(model1, 
+                terms = c("AGE[all]", "male"), 
+                test = NULL)
+
+#Do slopes between females and males differ from each other?
+hypothesis_test(model1, 
+                terms = c("AGE[all]", "male"))
+```
+
+The two slopes are significantly different from 0 (i.e., they are significant linear trends), and that the slopes between males and females are significantly different from each other.
+
+For some data sets, it is possible we do not have enough observations to estimate reliable effects. Some researchers aggregate or collapse observations into categories or groups. This is usually guided by specific hypotheses or questions. In our case, we could be more interested in understanding whether risk varies based on a person being in mid-adulthood or older adulthood. Thus, we created a dichotomous variable to explore the interaction effect between Sex and this new variable.
+
+
+**Model 2: Dichotomous x Dichotomous Interaction**
+
+We re-specify model 1, but now replace AGE (out continous age variable) with agestage (our dichotomous age variable). 
+
+```{r}
+model2<-svyglm(distress ~ 1 + reth + agestage + educ1 + male + YEAR + agestage:male,
+               design=des,
+               family="quasibinomial")
+summary(model2)
+```
+
+We can retrieve the marginal means in a similar way.
+
+```{r}
+#Marginal effects
+marginal_effects_mod2 <- ggpredict(model2, 
+                                   terms = c("agestage", "male"))  
+marginal_effects_mod2
+```
+
+And the code for the plot takes the object created from the ggeffects() function.
+
+```{r}
+#Plot code (more complex)
+plot(marginal_effects_mod2, 
+     facet = FALSE) +
+  labs(title = "Predicted Probablities of Distress: Model 2",
+       x = "Age (Dichotomous)",
+       y = "Distress") +
+  #scale_x_continuous(limits=c(18,85),breaks=c(18,25,35,45,55,65,75,85))+
+  theme(legend.position="bottom",legend.title = element_blank())+
+  guides(color=guide_legend(override.aes=list(fill=NA)))+
+  theme(panel.spacing.x=unit(1.5, "lines"),panel.spacing.y=unit(1, "lines"))
+```
+**Figure #** Visualization of interaction effects for a dichotomous measure of Age and sex concerning having serious psychological distress.
+
+From this figure, the main effects are still clearly visible. Middle aged individuals have a higher predictive probability to report distress than older individuals, and females reported more distress than males. However, now terms are allowed to vary across these contrasts. For females (red dots), the predicted probability of reporting distress in middle aged participants is 5% and decreases to 3% in old age participants. For males (blue dots), the predicted probability of reporting distress decreases from 3% to 2% from middle to older aged participants. In other words, the predicted probability of reported distress decreases to a greater extent from middle-age to older age in females (decrase of 2%) compared to males (decrease of 1%). 
+
+The hypothesis_test() function can also be used to the significance of all pairwise comparisons.
+
+```{r}
+#Hypothesis test
+hypothesis_test(model2, 
+                terms = c("agestage", "male"))
+#Note that hypothesis_test(marginal_effects_mod2) is equivalent.
+```
+
+The only pairwise comparison that is not statistically significant are older-females (right side, red dot) and middle-aged-males (left side, blue dot). 
+
+
+**Model 3: Continuous x Categorical Interaction**
+
+Next, we will replace the sex assigned at birth variable with a categorical variable, ethnicity (reth). The data set contains categories for five ethnicity: White (comparison group), Asian, Black/AA, Other, and Latine.
+
+First, we fit the model and estimate the marginal effects.
+
+```{r}
+model3 <- svyglm(distress ~ 1 + reth + AGE + educ1 + male + YEAR + AGE:reth,
+               design=des,
+               family="quasibinomial")
+summary(model3)
+
+#Marginal effects
+marginal_effects_mod3 <- ggpredict(model3, 
+                                   terms = c("AGE[all]", "reth"))  
+marginal_effects_mod3
+```
+
+And plot the marginal effects.
+
+```{r}
+#Plot code
+plot(marginal_effects_mod3, 
+     facet = FALSE) +
+  labs(title = "Predicted Probablities of Distress: Model 3",
+       x = "Age (Continous)",
+       y = "Distress") +
+  scale_x_continuous(limits=c(18,85),breaks=c(18,25,35,45,55,65,75,85))+
+  theme(legend.position="bottom",legend.title = element_blank())+
+  guides(color=guide_legend(override.aes=list(fill=NA)))+
+  theme(panel.spacing.x=unit(1.5, "lines"),panel.spacing.y=unit(1, "lines"))
+```
+**Figure #** Visualization of interaction effects for a continuous measure of Age and ethnicity concerning having serious psychological distress. 
+
+From the figure, we see that for White individuals, predicted probabilities of distress decreased from 5% at age 18 to 4% at age 85. For Asian individuals, predicted probabilities of distress increased from 2% at age 18 to 3% at age 85. For Black individuals, predicted probabilities of distress decreased from 5% at age 18 to 4% at age 85. Importantly, this effect is not significant. So in a paper, this would not be reported usually. Finally, for Latine individuals, predicted probabilities of distress increased from 3% at age 18 to 6% at age 85.
+
+Take home message for Model 4 is that, when treating age as continuous, the range of predicted probabilities increased. This is because we are no longer average the effects within each age group. Now, each age (in 1 year increments) can have it's own unique association with distress, while account for the moderating role of ethnicity.
+
+We can also look at whether any slopes are different than 0, and whether there are any significant differences in slopes between ethnicity groups.
+
+```{r}
+#Are there significant linear trends/ Are slopes different than 0?
+hypothesis_test(marginal_effects_mod3, 
+                test = NULL)
+
+#Do slopes between females and males differ from each other?
+hypothesis_test(marginal_effects_mod3)
+```
+
+All five slopes are significantly different from 0 (i.e., they are significant linear trends), and that the slopes between all ethnicities are significantly different from each other.
+
+Finally, when there are categorical variables, a researcher could be interested in testing a "differences in differences" hypothesis. For example, "Does the difference of the slopes of age between White and Asian individuals (difference in red and blue lines) are different from the slope-difference for the groups White and Latine individuals (difference in red and purple lines)?"
+
+```{r}
+hypothesis_test(model3, 
+                terms = c("AGE[all]", "reth"), 
+                test = "(b1 - b2) = (b1 - b4)")
+```
+
+We see that there is a significant difference in differences between the slopes of White and Asian individuals and White and Latine individuals.
+
+
+**Model 4: Dichotomous x Categorical Interaction**
+
+We can do a similar exercise, but use our dichotomous age variable.
+
+```{r}
+model4 <- svyglm(distress ~ 1 + reth + agestage + educ1 + male + YEAR + agestage:reth,
+               design=des,
+               family="quasibinomial")
+summary(model4)
+
+#Marginal effects
+marginal_effects_mod4 <- ggpredict(model4, 
+                                   terms = c("agestage", "reth"))  
+marginal_effects_mod4
+
+#Plot code
+plot(marginal_effects_mod4, 
+     facet = FALSE) +
+  labs(title = "Predicted Probablities of Distress: Model 4",
+       x = "Age (Dicotomous)",
+       y = "Distress") +
+  #scale_x_continuous(limits=c(18,85),breaks=c(18,25,35,45,55,65,75,85))+
+  theme(legend.position="bottom",legend.title = element_blank())+
+  guides(color=guide_legend(override.aes=list(fill=NA)))+
+  theme(panel.spacing.x=unit(1.5, "lines"),panel.spacing.y=unit(1, "lines"))
+```
+**Figure #** Visualization of interaction effects for a dichotomous measure of Age and ethnicity concerning having serious psychological distress. 
+
+From the plot and marginal effects tables, we can see that ethnicity is moderating the associating between age and distress. For White individuals, there is a 5% probability of reporting distress during middle age and a 3% probability of reporting distress during older age. For Asian individuals, there is a 3% probability of reporting distress during middle age and older age. For Black individuals, there is a 5% probability of reporting distress during middle age and a 3% probability of reporting distress during older age. Finally, for Latine individuals, there is a 4% probability of reporting distress during middle age and a 5% probability of reporting distress during older age.
+
+For both models 3 and 4, the take home message is that for Latine individuals, there is increased risk in reporting psychological distress during older age compared to middle age.
+
+We can also see whether any pairwise comparrisons among these groups are significant.
+
+```{r}
+#Hypothesis test
+hypothesis_test(marginal_effects_mod4)
+```
+
+This table is large, mainly because there are 32 unique pairwise comparisons. But it does demonstrate how one could assess whether these groups are significantly different. For practice, lets say that a research was interested in whether there were any significant difference in the probability of reporting distress between middle-aged Black individuals (left side, green dot) and older-aged Latine individuals (right side, purple dot). The hypothesis_test() function returns this contrast (0.003). There is a 0.3% difference in the probability of reporting distress between these groups, and this difference is *not* significant different than 0.
+
+
+**Model 5: Continous x Dichotomous x Categorical Interaction**
+
+For instances where we want to explore whether three variables operate together concerning our outcome we rely on three-way interactions. These can be interpreted as the examination of whether an effect varies at the intersection of these three variables. In this case, the interaction between age, race and ethnicity, and sex concerning serious psychological distress.
+
+Fitting a three-way interaction model is done in a similar way as a two-way interaction. But now, we specify the interaction use a *. This tests for all possible two-way interactions, as well as the three-way interaction.
+
+```{r}
+model5 <- svyglm(distress ~ 1 + reth + AGE + educ1 + male + YEAR + AGE*reth*male,
+               design = des,
+               family = "quasibinomial")
+summary(model5)
+
+#Marginal effects
+marginal_effects_mod5 <- ggpredict(model5, 
+                                   terms = c("AGE[all]", "reth", "male"))  
+marginal_effects_mod5
+
+#Plot code
+plot(marginal_effects_mod5, 
+     facet = TRUE) +
+  labs(title = "Predicted Probablities of Distress: Model 5",
+       x = "Age (Continous)",
+       y = "Distress") +
+  scale_x_continuous(limits=c(18,85),breaks=c(18,25,35,45,55,65,75,85))+
+  theme(legend.position="bottom",legend.title = element_blank())+
+  guides(color=guide_legend(override.aes=list(fill=NA)))+
+  theme(panel.spacing.x=unit(1.5, "lines"),panel.spacing.y=unit(1, "lines"))
+```
+
+From this figure we can observe that the associations between race and ethnicity vary by age mostly for female respondents. Among male respondents, the only visible age gradient was found for Latine adults.
+
+We can test for significant using the hypothesis_test() function.
+
+```{r}
+#Are there significant linear trends/ Are slopes different than 0?
+hypothesis_test(marginal_effects_mod5, 
+                test = NULL)
+
+#Do slopes between females and males differ from each other?
+hypothesis_test(marginal_effects_mod5)
+```
+
+For significant linear trends (i.e., are slopes different than 0), all female ethnicities had slopes that were different than 0, compared to males where only the Latine group was significantly different that 0. Confirming the visual trends seen in Figure #.
+
+For fun, we can also look at "differences in differences" between some of these groups.
+
+```{r}
+hypothesis_test(marginal_effects_mod5, 
+                test = "(b1 - b2) = (b1 - b4)")
+```
+
+This example show that the difference of slopes between White Females and White Males (red lines) is not significantly different than the difference of slopes between White Females and Asian Males.
+
+
+**Model 6: Dichotomous x Dichotomous x Categorical Interaction**
+
+```{r}
+model6 <- svyglm(distress ~ 1 + reth + agestage + educ1 + male + YEAR + agestage*reth*male,
+               design=des,
+               family="quasibinomial")
+summary(model6)
+
+#Marginal effects
+marginal_effects_mod6 <- ggpredict(model6, 
+                                   terms = c("agestage", "reth", "male"))  
+marginal_effects_mod6
+
+#Plot code
+plot(marginal_effects_mod6, 
+     facet = TRUE) +
+  labs(title = "Predicted Probablities of Distress: Model 6",
+       x = "Age (Dichotomous)",
+       y = "Distress") +
+  #scale_x_continuous(limits=c(18,85),breaks=c(18,25,35,45,55,65,75,85))+
+  theme(legend.position="bottom",legend.title = element_blank())+
+  guides(color=guide_legend(override.aes=list(fill=NA)))+
+  theme(panel.spacing.x=unit(1.5, "lines"),panel.spacing.y=unit(1, "lines"))
+
+#Hypothesis test
+hypothesis_test(marginal_effects_mod6)
+```
+
+Fun! We can see that 3-level models are very complex.
